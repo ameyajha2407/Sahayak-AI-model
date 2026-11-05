@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * {
+    box-sizing: border-box;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+  }
+  .container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 44px;
+  }
+  .mic-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 42px;
+    padding: 0 14px;
+    background: #5B8FD6;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 12px;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+    box-shadow: 0 2px 6px rgba(91, 143, 214, 0.25);
+  }
+  .mic-button:hover {
+    background: #4679be;
+    transform: translateY(-1px);
+    box-shadow: 0 3px 8px rgba(91, 143, 214, 0.35);
+  }
+  .mic-button.recording {
+    background: #E53E3E;
+    animation: pulse 1.5s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(229, 62, 62, 0.6); }
+    70% { box-shadow: 0 0 0 10px rgba(229, 62, 62, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(229, 62, 62, 0); }
+  }
+  .status-badge {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #243B63;
+    font-weight: 600;
+    background: #FFFFFF;
+    border: 1px solid #B9D4F0;
+    padding: 4px 10px;
+    border-radius: 8px;
+    max-width: calc(100% - 110px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .red-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #E53E3E;
+    animation: blink 1s infinite;
+  }
+  @keyframes blink {
+    50% { opacity: 0.3; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <button id="micBtn" class="mic-button" onclick="toggleSpeech()">
+    <span id="btnIcon">🎤</span>
+    <span id="btnLabel">Speak</span>
+  </button>
+  <div id="statusBadge" class="status-badge">
+    <div class="red-dot"></div>
+    <span id="timerText">00:00</span>
+    <span id="previewText" style="color:#5A6F8F; font-weight:400; margin-left:4px;"></span>
+  </div>
+</div>
+
+<script>
+  let recognition = null;
+  let isRecording = false;
+  let timerInterval = null;
+  let silenceTimer = null;
+  let startTime = 0;
+  let currentLang = "en-IN";
+  let finalTranscript = "";
+
+  function sendToStreamlit(data) {
+    window.parent.postMessage({
+      isStreamlitMessage: true,
+      type: "streamlit:setComponentValue",
+      value: data
+    }, "*");
+  }
+
+  function setFrameHeight(height) {
+    window.parent.postMessage({
+      isStreamlitMessage: true,
+      type: "streamlit:setFrameHeight",
+      height: height || 44
+    }, "*");
+  }
+
+  // Check Web Speech API support
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRec) {
+    document.getElementById("micBtn").style.display = "none";
+    sendToStreamlit({ supported: false });
+  }
+
+  function updateTimer() {
+    if (!isRecording) return;
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
+    const secs = String(elapsed % 60).padStart(2, "0");
+    document.getElementById("timerText").innerText = `${mins}:${secs}`;
+    
+    // Safety max recording cutoff at 25 seconds
+    if (elapsed > 25) {
+      stopSpeech();
+    }
+  }
+
+  function toggleSpeech() {
+    if (isRecording) {
+      stopSpeech();
+    } else {
+      startSpeech();
+    }
+  }
+
+  function startSpeech() {
+    if (!SpeechRec) return;
+    try {
+      recognition = new SpeechRec();
+      recognition.lang = currentLang;
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+
+      finalTranscript = "";
+      startTime = Date.now();
+      isRecording = true;
+
+      document.getElementById("micBtn").classList.add("recording");
+      document.getElementById("btnIcon").innerText = "⏹️";
+      document.getElementById("btnLabel").innerText = "Stop";
+      document.getElementById("statusBadge").style.display = "inline-flex";
+      document.getElementById("timerText").innerText = "00:00";
+      document.getElementById("previewText").innerText = "Listening…";
+
+      clearInterval(timerInterval);
+      timerInterval = setInterval(updateTimer, 500);
+
+      recognition.onresult = function(event) {
+        let interim = "";
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript + " ";
+          } else {
+            interim += event.results[i][0].transcript;
+          }
+        }
+        const display = (finalTranscript + interim).trim();
+        if (display) {
+          document.getElementById("previewText").innerText = display.slice(-40);
+        }
+
+        // Reset silence timer on every new word: auto-stop after 1.2s of silence (Part C3)
+        clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(function() {
+          if (isRecording && (finalTranscript.trim() || interim.trim())) {
+            if (!finalTranscript.trim() && interim.trim()) {
+              finalTranscript = interim.trim();
+            }
+            stopSpeech();
+          }
+        }, 1200);
+      };
+
+      recognition.onerror = function(event) {
+        console.warn("Speech recognition error:", event.error);
+        if (event.error === "no-speech") {
+          document.getElementById("previewText").innerText = "Couldn't hear that, please try again or type";
+        }
+        stopSpeech(true);
+      };
+
+      recognition.onend = function() {
+        if (isRecording) {
+          stopSpeech();
+        }
+      };
+
+      recognition.start();
+    } catch (err) {
+      console.error("Start speech failed:", err);
+      stopSpeech(true);
+    }
+  }
+
+  function stopSpeech(hadError) {
+    if (!isRecording) return;
+    isRecording = false;
+    clearInterval(timerInterval);
+    clearTimeout(silenceTimer);
+
+    document.getElementById("micBtn").classList.remove("recording");
+    document.getElementById("btnIcon").innerText = "🎤";
+    document.getElementById("btnLabel").innerText = "Speak";
+
+    if (recognition) {
+      try { recognition.stop(); } catch(e) {}
+    }
+
+    const elapsed = Math.max(0.5, ((Date.now() - startTime) / 1000));
+    const resultText = finalTranscript.trim();
+
+    if (resultText && !hadError) {
+      document.getElementById("previewText").innerText = "✓ Sent";
+      sendToStreamlit({
+        supported: true,
+        transcript: resultText,
+        recording_length: elapsed,
+        type: "browser_webspeech"
+      });
+      setTimeout(() => {
+        document.getElementById("statusBadge").style.display = "none";
+      }, 1500);
+    } else {
+      setTimeout(() => {
+        document.getElementById("statusBadge").style.display = "none";
+      }, 2000);
+    }
+  }
+
+  // Handle incoming arguments from Streamlit (like selected language)
+  window.addEventListener("message", function(event) {
+    if (event.data && event.data.type === "streamlit:render") {
+      const args = event.data.args || {};
+      if (args.lang) {
+        currentLang = args.lang;
+      }
+      setFrameHeight(44);
+    }
+  });
+
+  setFrameHeight(44);
+</script>
+</body>
+</html>
+
